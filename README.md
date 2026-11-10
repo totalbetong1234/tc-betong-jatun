@@ -13,6 +13,13 @@ Prosjekt → **Innstillinger** → **Extensions** (Apps & Capabilities) → **+ 
 ## Elementtyper (RefCompClass)
 AHE Punktfundamenter · AHF Sålefundamenter · ASA Søyler · AVA Yttervegger · AVB Innervegger · ABA Bjelker · ADA Dekker · AOA Gulv
 
+## Egne egenskaper fra Trimble Connect
+`PK Koder`, `Fremdrift` (Støpe Dato) og `Byggningsdel` er lagt til i Trimble Connect – ikke i IFC-filen. Panelet henter dem fra Trimble Connect sin Property Set-tjeneste (pset-api, Europa først):
+- Første gang ber Trimble deg **godkjenne tilgang** for extensionen (bruker din innlogging; ingen nøkler i koden).
+- Elementer kobles via IFC-GUID (`frn:entity:<GUID>`).
+- Panelet oppdager selv hvilke egenskapssett som finnes og henter alle verdier samlet.
+- **Innstillinger → Diagnose** viser hvert steg (token, region, sett, antall verdier som er flettet inn).
+
 ## Mengder
 - Volum = `Volume`. **Gulv (AOA): GrossArea × 0,12 m** (endres under Innstillinger).
 - Areal = `areal`; gulv bruker `GrossArea`.
@@ -40,5 +47,6 @@ AHE Punktfundamenter · AHF Sålefundamenter · ASA Søyler · AVA Yttervegger �
 All behandling skjer i nettleseren via Trimble Connect Workspace API. Ingen data sendes til andre servere.
 
 ## Versjoner
+- v0.3.0 – henter PK Koder, Støpe Dato og Byggningsdel fra Trimble Connect (pset-api) med brukerens tilgangstoken; egne sider pk.html/konstruksjon.html; diagnose.
 - v0.2.0 – egen Stål-gruppe (plater, søyler, bjelker), stålprofiler gjenkjennes, Farge status mer robust med diagnose.
 - v0.1.0 – første versjon.

@@ -1,4 +1,4 @@
-// TB Betong v0.2.2 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
+// TB Betong v0.3.0 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
 // To visninger fra samme kode:  index.html?view=pk  og  index.html?view=konstruksjon
 // All behandling skjer i nettleseren. Ingen data sendes ut av Trimble Connect.
 
@@ -70,6 +70,7 @@ let scanning = false;
 let appliedColors = new Map();
 let labelIds = [], labelTexts = new Set(), labelBusy = false;
 let selTimer = null, currentSel = [];
+let psetStats = new Map(); // egenskapssett-navn -> { n: antall objekter, props: Set(egenskapsnavn) }
 
 // ---------- hjelpere ----------
 const norm = (v) => String(v ?? "").trim().toLowerCase();
@@ -144,6 +145,7 @@ async function scan() {
     setStatus("Henter objekter fra modellene …");
     const modelObjects = await api.viewer.getObjects();
     allObjects = (modelObjects || []).map((mo) => ({ modelId: mo.modelId, ids: (mo.objects || []).map((o) => o.id) }));
+    psetStats = new Map();
     const found = [];
     let total = 0;
 
@@ -158,7 +160,12 @@ async function scan() {
           if (SKIP_CLASS.test(cls)) continue;
           const flat = new Map();
           for (const pset of op.properties || []) {
+            const psName = pset.name ?? "(uten navn)";
+            if (!psetStats.has(psName)) psetStats.set(psName, { n: 0, props: new Set() });
+            const st = psetStats.get(psName);
+            st.n++;
             for (const p of pset.properties || []) {
+              if (st.props.size < 40) st.props.add(p.name);
               const k = normName(p.name);
               if (!flat.has(k)) flat.set(k, p.value);
             }
@@ -214,10 +221,13 @@ async function scan() {
 
     items = found;
     itemIndex = new Map(items.map((o) => [key(o), o]));
+    await loadCustomProps(); // PK Koder, Støpe Dato, Byggningsdel fra Trimble Connect
     renderTree();
     const noise = items.filter((o) => o.annet).length;
     const steelN = items.filter((o) => o.steel).length;
-    setStatus(`Klar. ${items.length - noise - steelN} betongelementer, ${steelN} stål, ${noise} i «Annet» (av ${total} objekter).`);
+    const withPk = items.filter((o) => o.pk).length;
+    setStatus(`Klar. ${items.length - noise - steelN} betongelementer, ${steelN} stål, ${noise} i «Annet» (av ${total} objekter). ` +
+      `PK funnet på ${withPk}. Se Diagnose for detaljer.`);
     [ui.colorAll, ui.resetColors, ui.stampLabels, ui.clearLabels].forEach((b) => (b.disabled = false));
     updateSelection();
   } catch (err) {
@@ -226,6 +236,190 @@ async function scan() {
   } finally {
     scanning = false;
     ui.rescan.disabled = false;
+  }
+}
+
+// ---------- egne egenskapssett fra Trimble Connect (PK Koder, Fremdrift, Byggningsdel) ----------
+// Disse ligger ikke i IFC-filen, men i Trimble Connect sin Property Set-tjeneste (pset-api).
+// Panelet henter dem med brukerens tilgangstoken (godkjennes én gang i Trimble).
+const PSET_HOSTS = [
+  "https://pset-api.eu-west-1.connect.trimble.com/v1",   // Europa (Norge)
+  "https://pset-api.us-east-1.connect.trimble.com/v1",
+  "https://pset-api.eu-west-2.connect.trimble.com/v1",
+  "https://pset-api.ap-southeast-1.connect.trimble.com/v1",
+  "https://pset-api.ap-southeast-2.connect.trimble.com/v1",
+];
+const IFC64 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+let accessToken = null;
+let tokenWaiters = [];
+let customLog = [];           // vises i Diagnose
+const clog = (s) => { customLog.push(s); console.log("[TC-egenskaper]", s); };
+
+// 36-tegns UUID -> 22-tegns IFC-GUID. 22-tegns GUID returneres uendret.
+function toIfcGuid(g) {
+  const s = String(g || "").trim();
+  const hex = s.replace(/[-{}]/g, "");
+  if (!/^[0-9a-f]{32}$/i.test(hex)) return s;
+  let n = BigInt("0x" + hex), out = "";
+  for (let i = 0; i < 22; i++) { out = IFC64[Number(n & 63n)] + out; n >>= 6n; }
+  return out;
+}
+
+async function getToken() {
+  if (accessToken) return accessToken;
+  const r = await api.extension.requestPermission("accesstoken");
+  if (r && r !== "pending" && r !== "denied") { accessToken = r; return r; }
+  if (r === "denied") throw new Error("Tilgang avslått i Trimble. Godkjenn tilgang for extensionen og skann på nytt.");
+  clog("Venter på at du godkjenner tilgang i Trimble …");
+  setStatus("Godkjenn tilgang i Trimble-dialogen for å hente PK Koder og Støpe Dato …");
+  return new Promise((resolve, reject) => {
+    tokenWaiters.push(resolve);
+    setTimeout(() => reject(new Error("Fikk ikke tilgangstoken innen 90 sekunder.")), 90000);
+  });
+}
+
+async function psetGet(host, path) {
+  const res = await fetch(host + path, { headers: { Authorization: "Bearer " + (await getToken()), Accept: "application/json" } });
+  if (!res.ok) { const e = new Error(`HTTP ${res.status}`); e.status = res.status; throw e; }
+  return res.json();
+}
+
+// Runtime-id -> IFC-GUID for alle elementer (i porsjoner)
+async function loadGuids(objs) {
+  const guid = new Map();
+  for (const [modelId, os] of groupBy(objs, (o) => o.modelId)) {
+    const ids = os.map((o) => o.id);
+    const conv = async (chunk) => {
+      try {
+        const ext = await api.viewer.convertToObjectIds(modelId, chunk);
+        chunk.forEach((id, i) => { if (ext && ext[i]) guid.set(modelId + "|" + id, toIfcGuid(ext[i])); });
+      } catch (e) {
+        if (chunk.length > 1) for (const id of chunk) await conv([id]); // én og én hvis porsjonen feiler
+      }
+    };
+    for (let i = 0; i < ids.length; i += 500) {
+      setStatus(`Henter GUID … ${Math.min(i + 500, ids.length)} / ${ids.length}`);
+      await conv(ids.slice(i, i + 500));
+    }
+  }
+  return guid;
+}
+
+// Finn rolle (pk / date / del) for en egenskap ut fra navn i definisjonen
+function roleOf(defName, label, propCount) {
+  const l = normName(label), d = normName(defName);
+  if (P.pk.some((n) => normName(n) === l) || (/^pk/.test(d) && propCount === 1)) return "pk";
+  if (P.date.some((n) => normName(n) === l) || /st(ø|o)pe/.test(l)) return "date";
+  if (P.del.some((n) => normName(n) === l) || (/byg+ningsdel/.test(d) && propCount === 1)) return "del";
+  return null;
+}
+
+// Hovedfunksjon: henter og fletter inn PK, Støpe Dato og Byggningsdel
+async function loadCustomProps() {
+  customLog = [];
+  if (!items.length) return;
+  try {
+    await getToken();
+    clog("Tilgangstoken: OK");
+    const guid = await loadGuids(items);
+    clog(`GUID funnet for ${guid.size} av ${items.length} elementer. Eksempel: ${[...guid.values()][0] || "–"}`);
+    if (!guid.size) return;
+
+    // 1) Oppdag region og egenskapssett-definisjoner ved å prøve noen elementer
+    const samples = items.filter((o) => guid.has(key(o)) && !o.annet && !o.steel).slice(0, 40);
+    let host = null;
+    const defs = new Map(); // "libId|defId" -> { libId, defId }
+    // To måter å kode lenken i adressen på; den som gir treff huskes
+    const variants = [
+      (g) => encodeURIComponent("frn:entity:" + g),
+      (g) => "frn:entity:" + encodeURIComponent(g),
+    ];
+    let vIdx = null, tried = 0;
+    for (const o of samples) {
+      const g = guid.get(key(o));
+      for (const h of host ? [host] : PSET_HOSTS) {
+        let reached = false;
+        for (const vi of vIdx !== null ? [vIdx] : [0, 1]) {
+          try {
+            const page = await psetGet(h, "/psets/" + variants[vi](g));
+            reached = true;
+            const its = page.items || [];
+            if (!host) { host = h; clog(`Region: ${h.replace("https://", "").split("/")[0]}`); }
+            if (its.length) {
+              if (vIdx === null) { vIdx = vi; clog(`Lenkeformat ${vi + 1} gir treff (frn:entity:${g})`); }
+              its.forEach((p) => defs.set(p.libId + "|" + p.defId, { libId: p.libId, defId: p.defId }));
+              break;
+            }
+          } catch (e) {
+            if (e instanceof TypeError) clog("Nettverksfeil/CORS mot " + h.split("//")[1].split("/")[0] + ": " + e.message);
+            else if (tried < 6) clog(`${h.split("//")[1].split("/")[0]} (format ${vi + 1}): ${e.message}`);
+          }
+        }
+        tried++;
+        if (reached) break;
+      }
+      if (defs.size >= 3) break;
+    }
+    if (host && !defs.size) clog(`Region svarte, men ingen av ${samples.length} prøve-elementer hadde egne egenskapssett.`);
+    if (!host || !defs.size) { clog("Fant ingen egne egenskapssett på prøve-elementene."); return; }
+
+    // 2) Hent definisjonene (navn og egenskaper) og finn hvilke egenskaper vi trenger
+    const wanted = []; // { libId, defId, propKey, role }
+    for (const { libId, defId } of defs.values()) {
+      let def;
+      try { def = await psetGet(host, `/libs/${encodeURIComponent(libId)}/defs/${encodeURIComponent(defId)}`); }
+      catch (e) { clog(`Definisjon ${defId}: ${e.message}`); continue; }
+      const props = (def.schema && def.schema.props) || {};
+      const keys = Object.keys(props);
+      const i18nText = JSON.stringify(def.i18n || {});
+      clog(`Sett «${def.name ?? defId}»: ${keys.join(", ") || "(ingen)"}`);
+      for (const k of keys) {
+        // Visningsnavn: title i skjema, oversettelse i i18n, ellers nøkkelen
+        let label = props[k].title || props[k].description || k;
+        const m = new RegExp(`"[^"]*${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^"]*"\\s*:\\s*"([^"]+)"`).exec(i18nText);
+        if (m) label = m[1];
+        const role = roleOf(def.name || "", label, keys.length) || roleOf(def.name || "", k, keys.length);
+        if (role) { wanted.push({ libId, defId, propKey: k, role }); clog(`  → «${label}» (${k}) brukes som ${role}`); }
+      }
+    }
+    if (!wanted.length) { clog("Fant ikke PK/Støpe Dato/Byggningsdel blant egenskapene."); return; }
+
+    // 3) Hent alle verdier per definisjon (sider à 500) -> link -> props
+    const values = new Map(); // link -> { pk, date, del }
+    for (const [dk, ws] of groupBy(wanted, (w) => w.libId + "|" + w.defId)) {
+      const { libId, defId } = ws[0];
+      let path = `/libs/${encodeURIComponent(libId)}/defs/${encodeURIComponent(defId)}/psets?top=500`, pages = 0, n = 0;
+      while (path && pages < 200) {
+        const page = await psetGet(host, path);
+        for (const ps of page.items || []) {
+          if (ps.deleted) continue;
+          const v = values.get(ps.link) || {};
+          for (const w of ws) { const val = ps.props ? ps.props[w.propKey] : undefined; if (val !== undefined && val !== null && val !== "") v[w.role] = val; }
+          values.set(ps.link, v); n++;
+        }
+        pages++;
+        setStatus(`Henter Trimble-egenskaper … ${n} verdier`);
+        // "next" kan være full URL eller sti
+        path = page.next ? (page.next.startsWith("http") ? page.next.replace(host, "") : page.next) : null;
+      }
+      clog(`Sett ${defId}: ${n} verdier hentet`);
+    }
+
+    // 4) Flett inn
+    let hitPk = 0, hitDate = 0, hitDel = 0;
+    for (const o of items) {
+      const g = guid.get(key(o)); if (!g) continue;
+      const v = values.get("frn:entity:" + g) || values.get("frn:entity:" + encodeURIComponent(g));
+      if (!v) continue;
+      if (v.pk) { o.pk = String(v.pk).trim(); hitPk++; }
+      if (v.del) { o.del = String(v.del).trim(); o.endring = /endringsarbeid/i.test(o.del); hitDel++; }
+      if (v.date) { o.dateRaw = String(v.date); o.date = parseDate(v.date); o.status = statusOf(o.date); hitDate++; }
+    }
+    clog(`Flettet inn: PK ${hitPk} · Støpe Dato ${hitDate} · Byggningsdel ${hitDel} (av ${items.length})`);
+  } catch (err) {
+    console.error(err);
+    clog("Feil: " + (err?.message || err));
+    setStatus("Kunne ikke hente PK/Støpe Dato fra Trimble Connect: " + (err?.message || err), true);
   }
 }
 
@@ -596,15 +790,24 @@ async function diagnose() {
   const out = el("diagOut");
   out.hidden = false;
   out.textContent = "Leser …";
+  // Del 1: alle egenskapssett i modellen (fra skanningen) – virker uten utvalg
+  const sets = [...psetStats].sort((a, b) => natural(a[0], b[0]));
+  const head = ["TRIMBLE CONNECT-EGENSKAPER (PK Koder / Fremdrift / Byggningsdel):",
+    ...(customLog.length ? customLog.map((s) => "  " + s) : ["  (ikke kjørt – trykk «Skann modellene på nytt»)"]), "",
+    `EGENSKAPSSETT I IFC-MODELLEN (${sets.length}):`,
+    ...sets.map(([n, s]) => `  ${n}  (${s.n} obj): ${[...s.props].slice(0, 12).join(", ")}${s.props.size > 12 ? " …" : ""}`),
+    "", "VALGT ELEMENT:"];
   try {
     const sel = await api.viewer.getSelection();
-    const m = (sel || []).find((s) => s.objectRuntimeIds && s.objectRuntimeIds.length);
-    if (!m) { out.textContent = "Velg ett element i modellen først."; return; }
+    let m = (sel || []).find((s) => s.objectRuntimeIds && s.objectRuntimeIds.length);
+    // Reserve: bruk det panelet allerede viser under «Valgt i modellen»
+    if (!m && currentSel.length) m = { modelId: currentSel[0].modelId, objectRuntimeIds: [currentSel[0].id] };
+    if (!m) { out.textContent = head.join("\n") + "\n  (ingenting valgt)"; return; }
     const id = m.objectRuntimeIds[0];
     const [op] = await api.viewer.getObjectProperties(m.modelId, [id]);
     // BigInt (datoer) kan ikke skrives med vanlig JSON -> gjør om til tekst
     const js = (v) => JSON.stringify(v, (k, x) => (typeof x === "bigint" ? `${x}n` : x));
-    const lines = [
+    const lines = [...head,
       `Modell: ${m.modelId}`, `Objekt-id: ${id}`,
       `Klasse: ${op?.class ?? "–"}`,
       `Product: ${op?.product ? js(op.product) : "–"}`,
@@ -629,12 +832,22 @@ async function diagnose() {
       : "  (ikke med i skanningen)");
     out.textContent = lines.join("\n");
   } catch (err) {
-    out.textContent = "Feil: " + (err?.message || err);
+    out.textContent = head.join("\n") + "\n  Feil: " + (err?.message || err);
   }
 }
 
 // ---------- oppstart ----------
-function onEvent(event) {
+function onEvent(event, args) {
+  // Tilgangstoken (første gang etter godkjenning, og ved hver fornyelse)
+  if (event === "extension.accessToken") {
+    const t = args && (args.data ?? args);
+    if (typeof t === "string" && t !== "pending" && t !== "denied") {
+      accessToken = t;
+      tokenWaiters.forEach((r) => r(t));
+      tokenWaiters = [];
+    }
+    return;
+  }
   if (/onSelectionChanged/i.test(event)) {
     clearTimeout(selTimer);
     selTimer = setTimeout(updateSelection, 300); // bare leser, endrer ingenting i modellen
