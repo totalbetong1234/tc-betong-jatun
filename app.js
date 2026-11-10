@@ -1,4 +1,4 @@
-// TB Betong v0.2.1 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
+// TB Betong v0.2.2 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
 // To visninger fra samme kode:  index.html?view=pk  og  index.html?view=konstruksjon
 // All behandling skjer i nettleseren. Ingen data sendes ut av Trimble Connect.
 
@@ -602,16 +602,27 @@ async function diagnose() {
     if (!m) { out.textContent = "Velg ett element i modellen først."; return; }
     const id = m.objectRuntimeIds[0];
     const [op] = await api.viewer.getObjectProperties(m.modelId, [id]);
+    // BigInt (datoer) kan ikke skrives med vanlig JSON -> gjør om til tekst
+    const js = (v) => JSON.stringify(v, (k, x) => (typeof x === "bigint" ? `${x}n` : x));
     const lines = [
       `Modell: ${m.modelId}`, `Objekt-id: ${id}`,
       `Klasse: ${op?.class ?? "–"}`,
-      `Product: ${op?.product ? JSON.stringify(op.product) : "–"}`,
-      `Farge: ${op?.color ?? "–"}`, "",
+      `Product: ${op?.product ? js(op.product) : "–"}`,
+      `Farge: ${op?.color ?? "–"}`,
+      `Antall egenskapssett: ${(op?.properties || []).length}`, "",
     ];
     for (const ps of op?.properties || []) {
       lines.push(`[${ps.name ?? "(uten navn)"}]`);
-      for (const p of ps.properties || []) lines.push(`  ${p.name} = ${String(p.value)}  (type ${p.type}, ${typeof p.value})`);
+      for (const p of ps.properties || []) {
+        let v;
+        try { v = typeof p.value === "bigint" ? `${p.value} (BigInt → ${fmtDate(parseDate(p.value)) || "?"})` : String(p.value); }
+        catch (_) { v = "(kan ikke vises)"; }
+        lines.push(`  ${p.name} = ${v}  (type ${p.type}, ${typeof p.value})`);
+      }
     }
+    // Andre felt på objektet enn de kjente (i tilfelle egne egenskaper ligger et annet sted)
+    const extra = Object.keys(op || {}).filter((k) => !["id", "class", "product", "properties", "color", "position"].includes(k));
+    if (extra.length) lines.push("", "Andre felt:", ...extra.map((k) => `  ${k}: ${js(op[k]).slice(0, 300)}`));
     const it = itemIndex.get(m.modelId + "|" + id);
     lines.push("", "Panelet tolker dette som:", it
       ? `  PK=${it.pk ?? "–"} · RefCompClass=${it.ref ?? "–"} · Type=${it.type} · Støpe Dato=«${it.dateRaw}» → ${STATUS_NAME[it.status]} · Volum=${nf2.format(it.vol)} m³ · ${it.steel || it.annet || "betong"}`
