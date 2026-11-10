@@ -1,8 +1,10 @@
-// TB Betong v0.1.0 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
+// TB Betong v0.2.1 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
 // To visninger fra samme kode:  index.html?view=pk  og  index.html?view=konstruksjon
 // All behandling skjer i nettleseren. Ingen data sendes ut av Trimble Connect.
 
-const VIEW = new URLSearchParams(location.search).get("view") === "konstruksjon" ? "konstruksjon" : "pk";
+// pk.html / konstruksjon.html (egne sider, så Trimble ser to ulike extensions). ?view= virker fortsatt.
+const VIEW = (/konstruksjon/i.test(location.pathname) || new URLSearchParams(location.search).get("view") === "konstruksjon")
+  ? "konstruksjon" : "pk";
 const PROJECT_FILE = "1277_Jåtunparken";
 
 // RefCompClass -> navn (rekkefølge = visningsrekkefølge)
@@ -35,7 +37,9 @@ const P = {
 
 // Støy -> "Annet" (avklart med Krister 2026-11-10)
 const NOISE_TYPE = /prefab|steinull|\beps\b|\bxps\b|isolasjon/i;
-const STEEL = /^\s*S\d{3}|stål|steel|metal/i;
+const STEEL = /^\s*S\d{3}|stål|steel|metal/i;                 // materiale
+// Stålprofiler i type/navn (HUP, KFHUP, VKR, RHS, HEA/HEB, IPE, UNP …)
+const STEEL_PROFILE = /\b(K?F?C?HUP|VKR|KKR|RHS|SHS|CHS|HE\s?\d*[ABM]|HE[ABM]|IPE|UNP|UPE|INP|HSQ|L\s?\d+\s?x\s?\d+)/i;
 const SKIP_CLASS = /^Ifc(Project|Site|Building|BuildingStorey|Space|OpeningElement|Grid|Annotation|Zone)$/i;
 
 const COLORS = {
@@ -176,12 +180,14 @@ async function scan() {
           const dateRaw = pick(flat, P.date);
           const date = parseDate(dateRaw);
 
-          // Støy -> Annet
-          let annet = null;
+          // Stål -> egen gruppe "Stål"; øvrig støy -> "Annet"
+          let annet = null, steel = null;
           if (!ref) annet = "Mangler RefCompClass";
-          else if (/BuildingElementProxy/i.test(cls)) annet = "Proxy-objekter";
+          else if (/BuildingElementProxy/i.test(cls)) steel = "Stålplater";
+          else if (STEEL.test(mat) || STEEL_PROFILE.test(type) || STEEL_PROFILE.test(name)) {
+            steel = ref === "ASA" ? "Stålsøyler" : ref === "ABA" ? "Stålbjelker" : "Annet stål";
+          }
           else if (NOISE_TYPE.test(type) || NOISE_TYPE.test(name)) annet = "Prefab og isolasjon";
-          else if (STEEL.test(mat)) annet = "Stål";
 
           // Mengder
           let vol = volRaw, area = areal ?? gross;
@@ -199,7 +205,8 @@ async function scan() {
             name, mat,
             date, status: statusOf(date),
             vol: vol ?? 0, area: area ?? 0,
-            annet,
+            annet, steel,
+            dateRaw: dateRaw === null ? "" : String(dateRaw),
           });
         }
       }
@@ -209,7 +216,8 @@ async function scan() {
     itemIndex = new Map(items.map((o) => [key(o), o]));
     renderTree();
     const noise = items.filter((o) => o.annet).length;
-    setStatus(`Klar. ${items.length - noise} betongelementer, ${noise} i «Annet» (av ${total} objekter).`);
+    const steelN = items.filter((o) => o.steel).length;
+    setStatus(`Klar. ${items.length - noise - steelN} betongelementer, ${steelN} stål, ${noise} i «Annet» (av ${total} objekter).`);
     [ui.colorAll, ui.resetColors, ui.stampLabels, ui.clearLabels].forEach((b) => (b.disabled = false));
     updateSelection();
   } catch (err) {
@@ -249,8 +257,9 @@ function groupBy(objs, fn) {
 const byRefOrder = (a, b) => (TYPE_ORDER.get(a.ref) ?? 99) - (TYPE_ORDER.get(b.ref) ?? 99) || natural(a.title, b.title);
 
 function buildTreeData() {
-  const concrete = items.filter((o) => !o.annet);
+  const concrete = items.filter((o) => !o.annet && !o.steel);
   const noise = items.filter((o) => o.annet);
+  const steel = items.filter((o) => o.steel);
   const pkOf = (o) => o.pk || "Uten PK";
   const tree = [];
 
@@ -271,8 +280,14 @@ function buildTreeData() {
       tree.push(g);
     }
   }
+  if (steel.length) {
+    const order = ["Stålsøyler", "Stålbjelker", "Stålplater", "Annet stål"];
+    const children = [...groupBy(steel, (o) => o.steel)].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
+      .map(([r, os]) => ({ title: r, objs: os }));
+    tree.push({ title: "Stål", objs: steel, children, noise: true });
+  }
   if (noise.length) {
-    const order = ["Mangler RefCompClass", "Proxy-objekter", "Prefab og isolasjon", "Stål"];
+    const order = ["Mangler RefCompClass", "Prefab og isolasjon"];
     const children = [...groupBy(noise, (o) => o.annet)].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
       .map(([r, os]) => ({ title: r, objs: os }));
     tree.push({ title: "Annet", objs: noise, children, noise: true });
@@ -413,15 +428,37 @@ async function isolate(objs) {
   }, "Kunne ikke isolere");
 }
 
+const HEX = { stopt: "#2EA043", planlagt: "#DA212C", gjenstar: "#0063A3" };
+
+// Setter farge i porsjoner. Prøver RGBA først, deretter hex-tekst hvis Trimble avviser RGBA.
+async function setColor(objs, st) {
+  const CHUNK = 1000;
+  for (let i = 0; i < objs.length; i += CHUNK) {
+    const sel = toSelector(objs.slice(i, i + CHUNK));
+    try { await api.viewer.setObjectState(sel, { color: COLORS[st] }); }
+    catch (e1) {
+      console.warn("RGBA avvist, prøver hex", e1);
+      await api.viewer.setObjectState(sel, { color: HEX[st] });
+    }
+  }
+}
+
 async function colorByStatus(objs) {
+  if (!objs.length) { setStatus("Ingen elementer å fargelegge."); return; }
   await safe(async () => {
     const by = groupBy(objs, (o) => o.status);
     for (const [st, os] of by) {
-      await api.viewer.setObjectState(toSelector(os), { color: COLORS[st] });
+      setStatus(`Fargelegger ${STATUS_NAME[st].toLowerCase()} (${os.length}) …`);
+      await setColor(os, st);
       os.forEach((o) => appliedColors.set(key(o), COLORS[st]));
     }
-    const s = stats(objs);
-    setStatus(`Fargelagt ${objs.length} elementer: støpt ${nf1.format(s.stopt)} · planlagt ${nf1.format(s.planlagt)} · gjenstår ${nf1.format(s.gjenstar)} m³.`);
+    // Diagnose: antall per status + eksempel på rå Støpe Dato
+    const n = (st) => (by.get(st) || []).length;
+    const sample = objs.find((o) => o.dateRaw)?.dateRaw;
+    setStatus(
+      `Fargelagt ${objs.length} elementer – støpt ${n("stopt")} · planlagt ${n("planlagt")} · gjenstår ${n("gjenstar")} stk.\n` +
+      (sample ? `Eksempel Støpe Dato fra modellen: «${sample}»` : "Fant ingen utfylt Støpe Dato – alt regnes som gjenstående.")
+    );
   }, "Kunne ikke fargelegge");
 }
 
@@ -437,8 +474,8 @@ async function resetAll() {
 function exportCsv(objs, label) {
   if (!objs.length) { setStatus("Ingenting å eksportere."); return; }
   const n3 = (v) => (Math.round(v * 1000) / 1000).toString().replace(".", ",");
-  const head = ["PK", "Elementtype", "RefCompClass", "Type", "Navn", "Byggningsdel", "Endringsarbeid", "Støpe Dato", "Status", "Volum (m³)", "Areal (m²)", "Materiale", "Annet (årsak)"];
-  const rows = objs.map((o) => [o.pk || "", o.annet ? "Annet" : o.refName, o.ref || "", o.type, o.name, o.del, o.endring ? "Ja" : "", fmtDate(o.date), STATUS_NAME[o.status], n3(o.vol), n3(o.area), o.mat, o.annet || ""]);
+  const head = ["PK", "Elementtype", "RefCompClass", "Type", "Navn", "Byggningsdel", "Endringsarbeid", "Støpe Dato", "Status", "Volum (m³)", "Areal (m²)", "Materiale", "Stål/Annet (årsak)"];
+  const rows = objs.map((o) => [o.pk || "", o.steel ? "Stål" : o.annet ? "Annet" : o.refName, o.ref || "", o.type, o.name, o.del, o.endring ? "Ja" : "", fmtDate(o.date), STATUS_NAME[o.status], n3(o.vol), n3(o.area), o.mat, o.steel || o.annet || ""]);
   const cell = (v) => { const s = String(v ?? ""); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const csv = "﻿" + [head, ...rows].map((r) => r.map(cell).join(";")).join("\r\n");
   const d = new Date();
@@ -553,6 +590,38 @@ async function stampLabels() {
   }
 }
 
+// ---------- diagnose ----------
+// Viser alle egenskapssett og egenskaper Trimble gir panelet for første valgte element.
+async function diagnose() {
+  const out = el("diagOut");
+  out.hidden = false;
+  out.textContent = "Leser …";
+  try {
+    const sel = await api.viewer.getSelection();
+    const m = (sel || []).find((s) => s.objectRuntimeIds && s.objectRuntimeIds.length);
+    if (!m) { out.textContent = "Velg ett element i modellen først."; return; }
+    const id = m.objectRuntimeIds[0];
+    const [op] = await api.viewer.getObjectProperties(m.modelId, [id]);
+    const lines = [
+      `Modell: ${m.modelId}`, `Objekt-id: ${id}`,
+      `Klasse: ${op?.class ?? "–"}`,
+      `Product: ${op?.product ? JSON.stringify(op.product) : "–"}`,
+      `Farge: ${op?.color ?? "–"}`, "",
+    ];
+    for (const ps of op?.properties || []) {
+      lines.push(`[${ps.name ?? "(uten navn)"}]`);
+      for (const p of ps.properties || []) lines.push(`  ${p.name} = ${String(p.value)}  (type ${p.type}, ${typeof p.value})`);
+    }
+    const it = itemIndex.get(m.modelId + "|" + id);
+    lines.push("", "Panelet tolker dette som:", it
+      ? `  PK=${it.pk ?? "–"} · RefCompClass=${it.ref ?? "–"} · Type=${it.type} · Støpe Dato=«${it.dateRaw}» → ${STATUS_NAME[it.status]} · Volum=${nf2.format(it.vol)} m³ · ${it.steel || it.annet || "betong"}`
+      : "  (ikke med i skanningen)");
+    out.textContent = lines.join("\n");
+  } catch (err) {
+    out.textContent = "Feil: " + (err?.message || err);
+  }
+}
+
 // ---------- oppstart ----------
 function onEvent(event) {
   if (/onSelectionChanged/i.test(event)) {
@@ -581,7 +650,8 @@ async function init() {
     return;
   }
   ui.rescan.addEventListener("click", scan);
-  ui.colorAll.addEventListener("click", () => colorByStatus(items.filter((o) => !o.annet)));
+  el("diagBtn").addEventListener("click", diagnose);
+  ui.colorAll.addEventListener("click", () => colorByStatus(items.filter((o) => !o.annet && !o.steel)));
   ui.resetColors.addEventListener("click", resetAll);
   ui.csvSel.addEventListener("click", () => exportCsv(currentSel, "utvalg"));
   ui.stampLabels.addEventListener("click", stampLabels);

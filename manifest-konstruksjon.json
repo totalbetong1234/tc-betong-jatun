@@ -1,7 +1,7 @@
 {
   "title": "TB Betong Konstruksjon",
   "description": "Betong per konstruksjonsdel: volum, areal og støpestatus (Jåtunparken)",
-  "url": "https://totalbetong1234.github.io/tc-betong-jatun/index.html?view=konstruksjon",
+  "url": "https://totalbetong1234.github.io/tc-betong-jatun/konstruksjon.html",
   "icon": "https://totalbetong1234.github.io/tc-betong-jatun/icon-konstruksjon.svg",
   "infoUrl": "https://totalbetong1234.github.io/tc-betong-jatun/README.md",
   "extensionType": ["3dviewer"]

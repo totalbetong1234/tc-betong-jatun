@@ -19,12 +19,14 @@ AHE Punktfundamenter · AHF Sålefundamenter · ASA Søyler · AVA Yttervegger �
 - Status fra `Støpe Dato`: dato t.o.m. i dag = **støpt** (grønn), frem i tid = **planlagt** (rød), tom = **gjenstår** (blå).
 - `Byggningsdel` = Endringsarbeider ligger i sin PK, merket **E** og summert som «herav endringsarbeider».
 
+## Stål (egen gruppe)
+- **Stålplater**: proxy-objekter (IfcBuildingElementProxy), f.eks. ARB.
+- **Stålsøyler / Stålbjelker / Annet stål**: materiale S235/S355 …, «Stål», «Steel», «Metal», eller stålprofil i type/navn (HUP, KFHUP, VKR, RHS, SHS, CHS, HEA/HEB/HEM, IPE, UNP, UPE, L-profil).
+- Stål sjekkes før prefab-regelen, så stålsøyler havner ikke i «Prefab og isolasjon».
+
 ## Annet (støy)
-Flyttes automatisk til «Annet»:
 - Mangler RefCompClass («--» eller «.»), f.eks. ROOF TRP 200 og prosjektnullpunkt.
-- Proxy-objekter (IfcBuildingElementProxy), f.eks. ARB.
 - Type/navn med PREFAB, Steinull, EPS, XPS, Isolasjon.
-- Stål: materiale S235/S355 …, «Stål», «Steel» eller «Metal».
 
 ## Funksjoner
 - **Valgt i modellen**: m³, m², antall og status for det som er markert (oppdateres når utvalget endres) + **CSV**.
@@ -38,4 +40,5 @@ Flyttes automatisk til «Annet»:
 All behandling skjer i nettleseren via Trimble Connect Workspace API. Ingen data sendes til andre servere.
 
 ## Versjoner
+- v0.2.0 – egen Stål-gruppe (plater, søyler, bjelker), stålprofiler gjenkjennes, Farge status mer robust med diagnose.
 - v0.1.0 – første versjon.

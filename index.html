@@ -11,7 +11,7 @@
   <header>
     <img id="logo" src="icon-pk.svg" alt="" class="logo">
     <h1 id="title">TB Betong</h1>
-    <span class="version">v0.1.0</span>
+    <span class="version">v0.2.1</span>
     <button id="infoBtn" class="info" title="Informasjon" aria-label="Informasjon">i</button>
   </header>
   <div id="infoBox" class="infobox" hidden>Kontakt Krister om problemer.</div>
@@ -64,6 +64,12 @@
         <input id="labelOffset" type="number" value="2000" min="100" step="100">
       </label>
       <div class="hint">Gulv (AOA): volum = GrossArea × gulvtykkelse. Øvrige: Volume. Trykk «Skann på nytt» etter endring.</div>
+    </details>
+    <details>
+      <summary>Diagnose</summary>
+      <div class="hint">Velg ett element i modellen (f.eks. en vegg med kjent PK og Støpe Dato) og trykk knappen. Viser alle egenskaper Trimble gir panelet.</div>
+      <button class="small" id="diagBtn" style="margin-top:6px">Vis egenskaper for valgt element</button>
+      <pre id="diagOut" class="diag" hidden></pre>
     </details>
   </section>
 

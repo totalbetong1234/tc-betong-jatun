@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TB Betong</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+</head>
+<body>
+  <header>
+    <img id="logo" src="icon-pk.svg" alt="" class="logo">
+    <h1 id="title">TB Betong</h1>
+    <span class="version">v0.2.1</span>
+    <button id="infoBtn" class="info" title="Informasjon" aria-label="Informasjon">i</button>
+  </header>
+  <div id="infoBox" class="infobox" hidden>Kontakt Krister om problemer.</div>
+
+  <!-- Utvalg -->
+  <section class="card">
+    <div class="row">
+      <div class="label">Valgt i modellen</div>
+      <button class="small" id="csvSel" disabled title="Lagre valgte elementer som CSV">CSV</button>
+    </div>
+    <div id="selSum" class="stats">Ingenting valgt</div>
+  </section>
+
+  <!-- Etiketter -->
+  <section class="card">
+    <div class="label">Etiketter (type + m³)</div>
+    <div class="hint" id="labelInfo">Velg elementer i modellen, trykk «Stamp label»</div>
+    <div class="leaf-actions" style="margin:8px 0 0 0">
+      <button id="stampLabels" disabled>Stamp label</button>
+      <button id="clearLabels" disabled>Fjern etiketter</button>
+    </div>
+  </section>
+
+  <!-- Tre -->
+  <section class="card">
+    <div class="row">
+      <div class="label" id="treeTitle">Grupper</div>
+      <div class="leaf-actions" style="margin:0">
+        <button class="small" id="colorAll" disabled title="Fargelegg hele modellen etter støpestatus">Farge status</button>
+        <button class="small" id="resetColors" disabled title="Fjern farger og vis alt">Nullstill</button>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:#2ea043"></i>Støpt</span>
+      <span><i class="sw" style="background:#da212c"></i>Planlagt</span>
+      <span><i class="sw" style="background:#0063a3"></i>Gjenstår</span>
+      <span><b class="badge">E</b>Endringsarbeider</span>
+    </div>
+    <div id="groups" class="groups"><div class="hint">Ikke skannet ennå</div></div>
+  </section>
+
+  <section class="card">
+    <button id="rescan" disabled>Skann modellene på nytt</button>
+    <details>
+      <summary>Innstillinger</summary>
+      <label class="field">Gulvtykkelse for betongvolum (m)
+        <input id="floorThick" type="number" value="0.12" min="0.05" step="0.01">
+      </label>
+      <label class="field">Etiketthøyde over element (mm)
+        <input id="labelOffset" type="number" value="2000" min="100" step="100">
+      </label>
+      <div class="hint">Gulv (AOA): volum = GrossArea × gulvtykkelse. Øvrige: Volume. Trykk «Skann på nytt» etter endring.</div>
+    </details>
+    <details>
+      <summary>Diagnose</summary>
+      <div class="hint">Velg ett element i modellen (f.eks. en vegg med kjent PK og Støpe Dato) og trykk knappen. Viser alle egenskaper Trimble gir panelet.</div>
+      <button class="small" id="diagBtn" style="margin-top:6px">Vis egenskaper for valgt element</button>
+      <pre id="diagOut" class="diag" hidden></pre>
+    </details>
+  </section>
+
+  <div id="status" class="status">Kobler til Trimble Connect …</div>
+
+  <script src="app.js"></script>
+</body>
+</html>

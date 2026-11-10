@@ -44,6 +44,8 @@ summary { cursor: pointer; color: var(--blue); }
 .status { color: var(--muted); font-size: 12px; white-space: pre-wrap; }
 .status.error { color: var(--red); }
 
+.diag { background: #fff; border: 1px solid var(--border); border-radius: 3px; padding: 6px; font-size: 11px; max-height: 320px; overflow: auto; white-space: pre-wrap; user-select: text; }
+
 /* Mengder */
 .stats { font-size: 12px; margin-top: 6px; line-height: 1.5; }
 .stats b { font-weight: 600; }
