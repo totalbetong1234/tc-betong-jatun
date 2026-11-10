@@ -11,7 +11,7 @@
   <header>
     <img id="logo" src="icon-pk.svg" alt="" class="logo">
     <h1 id="title">TB Betong</h1>
-    <span class="version">v0.3.0</span>
+    <span class="version">v0.4.0</span>
     <button id="infoBtn" class="info" title="Informasjon" aria-label="Informasjon">i</button>
   </header>
   <div id="infoBox" class="infobox" hidden>Kontakt Krister om problemer.</div>
@@ -54,7 +54,9 @@
   </section>
 
   <section class="card">
-    <button id="rescan" disabled>Skann modellene på nytt</button>
+    <div class="hint" id="dataInfo" style="margin:0 0 6px 0">PK / Støpe Dato: ikke hentet ennå</div>
+    <button id="refreshCustom" disabled title="Hent nyeste PK Koder, Støpe Dato og Byggningsdel fra Trimble Connect (rask – bruker lagret modell og GUID)">Oppdater PK / Støpe Dato</button>
+    <button id="rescan" disabled style="margin-top:6px" title="Les hele modellen og GUID på nytt (tar tid). Bruk ved ny modellversjon eller om noe ser feil ut.">Les modellen på nytt</button>
     <details>
       <summary>Innstillinger</summary>
       <label class="field">Gulvtykkelse for betongvolum (m)

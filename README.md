@@ -20,6 +20,14 @@ AHE Punktfundamenter · AHF Sålefundamenter · ASA Søyler · AVA Yttervegger �
 - Panelet oppdager selv hvilke egenskapssett som finnes og henter alle verdier samlet.
 - **Innstillinger → Diagnose** viser hvert steg (token, region, sett, antall verdier som er flettet inn).
 
+## Hurtigminne og oppdatering
+Panelet lagrer det som er lest i nettleseren din (localStorage), så neste åpning går raskt:
+- **IFC-data og GUID** lagres per modellversjon. Laster du en ny versjon av modellen, leses den automatisk på nytt.
+- **PK / Støpe Dato / Byggningsdel** lagres med tidspunkt (vises over knappene).
+- **Oppdater PK / Støpe Dato** – henter nyeste verdier fra Trimble Connect (rask: bruker lagret modell, GUID og oppsett).
+- **Les modellen på nytt** – leser alt på nytt (tar tid). Brukes hvis noe ser feil ut.
+Hurtigminnet gjelder bare din nettleser/PC; andre brukere bygger sitt eget første gang.
+
 ## Mengder
 - Volum = `Volume`. **Gulv (AOA): GrossArea × 0,12 m** (endres under Innstillinger).
 - Areal = `areal`; gulv bruker `GrossArea`.
@@ -47,6 +55,7 @@ AHE Punktfundamenter · AHF Sålefundamenter · ASA Søyler · AVA Yttervegger �
 All behandling skjer i nettleseren via Trimble Connect Workspace API. Ingen data sendes til andre servere.
 
 ## Versjoner
+- v0.4.0 – hurtigminne (IFC/GUID per modellversjon, PK/Støpe Dato med tidspunkt), knappene «Oppdater PK / Støpe Dato» og «Les modellen på nytt», raskere GUID-henting.
 - v0.3.0 – henter PK Koder, Støpe Dato og Byggningsdel fra Trimble Connect (pset-api) med brukerens tilgangstoken; egne sider pk.html/konstruksjon.html; diagnose.
 - v0.2.0 – egen Stål-gruppe (plater, søyler, bjelker), stålprofiler gjenkjennes, Farge status mer robust med diagnose.
 - v0.1.0 – første versjon.

@@ -1,4 +1,4 @@
-// TB Betong v0.3.0 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
+// TB Betong v0.4.0 – Trimble Connect 3D-viewer extension (Total Betong, 1277 Jåtunparken)
 // To visninger fra samme kode:  index.html?view=pk  og  index.html?view=konstruksjon
 // All behandling skjer i nettleseren. Ingen data sendes ut av Trimble Connect.
 
@@ -59,7 +59,8 @@ const ui = {
   selSum: el("selSum"), csvSel: el("csvSel"),
   stampLabels: el("stampLabels"), clearLabels: el("clearLabels"), labelInfo: el("labelInfo"), labelOffset: el("labelOffset"),
   colorAll: el("colorAll"), resetColors: el("resetColors"), groups: el("groups"),
-  rescan: el("rescan"), floorThick: el("floorThick"), status: el("status"),
+  rescan: el("rescan"), refreshCustom: el("refreshCustom"), dataInfo: el("dataInfo"),
+  floorThick: el("floorThick"), status: el("status"),
 };
 
 let api = null;
@@ -134,24 +135,84 @@ function toSelector(objs) {
   return { modelObjectIds: [...byModel].map(([modelId, ids]) => ({ modelId, objectRuntimeIds: ids })) };
 }
 
+// ---------- hurtigminne (localStorage i denne nettleseren) ----------
+// IFC-data og GUID lagres per modellversjon (modelId = filversjon) – ny versjon leses automatisk på nytt.
+// PK / Støpe Dato / Byggningsdel lagres med tidspunkt og oppdateres med knappen «Oppdater PK / Støpe Dato».
+const CACHE_VER = "tcb1";
+function cacheGet(k) { try { const s = localStorage.getItem(k); return s ? JSON.parse(s) : null; } catch (_) { return null; } }
+function cacheSet(k, v) {
+  try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+  catch (e) {
+    // Fullt: rydd gamle TB-nøkler og prøv én gang til
+    try { Object.keys(localStorage).filter((x) => x.startsWith(CACHE_VER + ":")).forEach((x) => localStorage.removeItem(x)); localStorage.setItem(k, JSON.stringify(v)); return true; }
+    catch (_) { console.warn("Hurtigminne fullt", e); return false; }
+  }
+}
+const fmtTime = (t) => { const d = new Date(t); return `${fmtDate(d)} kl. ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+
+// Gjør en rå IFC-post om til et element (mengder, støy, status). Kjøres også på hurtigminne-data.
+function finalize(modelId, r, thick) {
+  const { ref, cls = "", type = "", name = "", mat = "", volRaw = null, gross = null, areal = null } = r;
+  let annet = null, steel = null;
+  if (!ref) annet = "Mangler RefCompClass";
+  else if (/BuildingElementProxy/i.test(cls)) steel = "Stålplater";
+  else if (STEEL.test(mat) || STEEL_PROFILE.test(type) || STEEL_PROFILE.test(name)) {
+    steel = ref === "ASA" ? "Stålsøyler" : ref === "ABA" ? "Stålbjelker" : "Annet stål";
+  }
+  else if (NOISE_TYPE.test(type) || NOISE_TYPE.test(name)) annet = "Prefab og isolasjon";
+
+  let vol = volRaw, area = areal ?? gross;
+  if (ref === "AOA") { area = gross ?? areal; vol = gross !== null ? gross * thick : volRaw; } // gulv: GrossArea × tykkelse
+
+  const date = parseDate(r.dateRaw || null);
+  const del = r.del || "";
+  return {
+    modelId, id: r.id,
+    ref, refName: TYPE_NAME.get(ref) || (ref ? `Ukjent (${ref})` : "–"),
+    pk: r.pk || null,
+    del, endring: /endringsarbeid/i.test(del),
+    type: type || name.replace(/:\d+$/, "") || "(uten type)",
+    name, mat,
+    date, status: statusOf(date),
+    vol: vol ?? 0, area: area ?? 0,
+    annet, steel,
+    dateRaw: r.dateRaw || "",
+  };
+}
+
 // ---------- skanning ----------
-async function scan() {
+// mode: "cache" (bruk lagret hvis mulig), "refresh" (lagret IFC/GUID, nye PK/datoer), "full" (alt på nytt)
+async function scan(mode = "cache") {
   if (scanning) return;
   scanning = true;
-  [ui.rescan, ui.colorAll, ui.resetColors, ui.stampLabels, ui.clearLabels].forEach((b) => (b.disabled = true));
+  [ui.rescan, ui.refreshCustom, ui.colorAll, ui.resetColors, ui.stampLabels, ui.clearLabels].forEach((b) => (b.disabled = true));
   const thick = Math.max(0.01, num(ui.floorThick.value) || 0.12);
+  const t0 = Date.now();
+  let usedIfcCache = false;
 
   try {
     setStatus("Henter objekter fra modellene …");
     const modelObjects = await api.viewer.getObjects();
     allObjects = (modelObjects || []).map((mo) => ({ modelId: mo.modelId, ids: (mo.objects || []).map((o) => o.id) }));
     psetStats = new Map();
+    customLog = [];
     const found = [];
     let total = 0;
 
     for (const mo of modelObjects || []) {
       const ids = (mo.objects || []).map((o) => o.id);
       total += ids.length;
+      const ck = `${CACHE_VER}:ifc:${mo.modelId}`;
+      const cached = mode === "full" ? null : cacheGet(ck);
+      if (cached && cached.n === ids.length && Array.isArray(cached.raws)) {
+        // Samme modellversjon og antall objekter -> bruk lagret
+        usedIfcCache = true;
+        for (const [n, c, ps] of cached.psets || []) psetStats.set(n, { n: c, props: new Set(ps) });
+        for (const r of cached.raws) found.push(finalize(mo.modelId, r, thick));
+        clog(`Modell ${mo.modelId}: IFC-data fra hurtigminne (${fmtTime(cached.savedAt)})`);
+        continue;
+      }
+      const raws = [];
       for (let i = 0; i < ids.length; i += BATCH) {
         setStatus(`Leser egenskaper … ${Math.min(i + BATCH, ids.length)} / ${ids.length} objekter`);
         const props = await api.viewer.getObjectProperties(mo.modelId, ids.slice(i, i + BATCH));
@@ -180,54 +241,35 @@ async function scan() {
           // Bare elementer med klassifisering, PK eller volum tas med
           if (!ref && !pk && volRaw === null) continue;
 
-          const type = String(pick(flat, P.type) ?? "").trim();
-          const name = String((op.product && op.product.name) || pick(flat, P.name) || "").trim();
-          const mat = String(pick(flat, P.mat) ?? "").trim();
-          const del = String(pick(flat, P.del) ?? "").trim();
           const dateRaw = pick(flat, P.date);
-          const date = parseDate(dateRaw);
-
-          // Stål -> egen gruppe "Stål"; øvrig støy -> "Annet"
-          let annet = null, steel = null;
-          if (!ref) annet = "Mangler RefCompClass";
-          else if (/BuildingElementProxy/i.test(cls)) steel = "Stålplater";
-          else if (STEEL.test(mat) || STEEL_PROFILE.test(type) || STEEL_PROFILE.test(name)) {
-            steel = ref === "ASA" ? "Stålsøyler" : ref === "ABA" ? "Stålbjelker" : "Annet stål";
-          }
-          else if (NOISE_TYPE.test(type) || NOISE_TYPE.test(name)) annet = "Prefab og isolasjon";
-
-          // Mengder
-          let vol = volRaw, area = areal ?? gross;
-          if (ref === "AOA") {                       // gulv: GrossArea × tykkelse
-            area = gross ?? areal;
-            vol = gross !== null ? gross * thick : volRaw;
-          }
-
-          found.push({
-            modelId: mo.modelId, id: op.id,
-            ref, refName: TYPE_NAME.get(ref) || (ref ? `Ukjent (${ref})` : "–"),
+          const r = {
+            id: op.id, cls, ref,
             pk: pk ? String(pk).trim() : null,
-            del, endring: /endringsarbeid/i.test(del),
-            type: type || name.replace(/:\d+$/, "") || "(uten type)",
-            name, mat,
-            date, status: statusOf(date),
-            vol: vol ?? 0, area: area ?? 0,
-            annet, steel,
-            dateRaw: dateRaw === null ? "" : String(dateRaw),
-          });
+            volRaw, gross, areal,
+            type: String(pick(flat, P.type) ?? "").trim(),
+            name: String((op.product && op.product.name) || pick(flat, P.name) || "").trim(),
+            mat: String(pick(flat, P.mat) ?? "").trim(),
+            del: String(pick(flat, P.del) ?? "").trim(),
+            dateRaw: dateRaw === null ? "" : String(dateRaw), // String() tåler BigInt
+          };
+          raws.push(r);
+          found.push(finalize(mo.modelId, r, thick));
         }
       }
+      const psets = [...psetStats].map(([n, s]) => [n, s.n, [...s.props]]);
+      if (!cacheSet(ck, { n: ids.length, savedAt: Date.now(), raws, psets })) clog("Kunne ikke lagre IFC-data i hurtigminnet (fullt).");
     }
 
     items = found;
     itemIndex = new Map(items.map((o) => [key(o), o]));
-    await loadCustomProps(); // PK Koder, Støpe Dato, Byggningsdel fra Trimble Connect
+    await loadCustomProps(mode); // PK Koder, Støpe Dato, Byggningsdel fra Trimble Connect
     renderTree();
     const noise = items.filter((o) => o.annet).length;
     const steelN = items.filter((o) => o.steel).length;
     const withPk = items.filter((o) => o.pk).length;
-    setStatus(`Klar. ${items.length - noise - steelN} betongelementer, ${steelN} stål, ${noise} i «Annet» (av ${total} objekter). ` +
-      `PK funnet på ${withPk}. Se Diagnose for detaljer.`);
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    setStatus(`Klar på ${secs} s${usedIfcCache ? " (hurtigminne)" : ""}. ${items.length - noise - steelN} betongelementer, ${steelN} stål, ${noise} i «Annet» (av ${total} objekter). ` +
+      `PK funnet på ${withPk}.`);
     [ui.colorAll, ui.resetColors, ui.stampLabels, ui.clearLabels].forEach((b) => (b.disabled = false));
     updateSelection();
   } catch (err) {
@@ -236,6 +278,7 @@ async function scan() {
   } finally {
     scanning = false;
     ui.rescan.disabled = false;
+    ui.refreshCustom.disabled = false;
   }
 }
 
@@ -284,25 +327,61 @@ async function psetGet(host, path) {
   return res.json();
 }
 
-// Runtime-id -> IFC-GUID for alle elementer (i porsjoner)
-async function loadGuids(objs) {
+// Runtime-id -> IFC-GUID for alle elementer. Lagres per modellversjon (endres aldri innen en versjon).
+async function loadGuids(objs, force = false) {
   const guid = new Map();
   for (const [modelId, os] of groupBy(objs, (o) => o.modelId)) {
-    const ids = os.map((o) => o.id);
+    const ck = `${CACHE_VER}:guid:${modelId}`;
+    const cached = force ? null : cacheGet(ck);
+    const known = (cached && cached.map) || {};
+    const missing = [];
+    for (const o of os) { const g = known[o.id]; if (g) guid.set(modelId + "|" + o.id, g); else missing.push(o.id); }
+    if (!missing.length) { clog(`Modell ${modelId}: GUID fra hurtigminne (${os.length})`); continue; }
+
+    // Del porsjonen i to ved feil (raskere enn én og én)
     const conv = async (chunk) => {
       try {
         const ext = await api.viewer.convertToObjectIds(modelId, chunk);
-        chunk.forEach((id, i) => { if (ext && ext[i]) guid.set(modelId + "|" + id, toIfcGuid(ext[i])); });
+        chunk.forEach((id, i) => { if (ext && ext[i]) { const g = toIfcGuid(ext[i]); guid.set(modelId + "|" + id, g); known[id] = g; } });
       } catch (e) {
-        if (chunk.length > 1) for (const id of chunk) await conv([id]); // én og én hvis porsjonen feiler
+        if (chunk.length > 1) {
+          const h = Math.ceil(chunk.length / 2);
+          await conv(chunk.slice(0, h));
+          await conv(chunk.slice(h));
+        }
       }
     };
-    for (let i = 0; i < ids.length; i += 500) {
-      setStatus(`Henter GUID … ${Math.min(i + 500, ids.length)} / ${ids.length}`);
-      await conv(ids.slice(i, i + 500));
+    for (let i = 0; i < missing.length; i += 500) {
+      setStatus(`Henter GUID … ${Math.min(i + 500, missing.length)} / ${missing.length} (lagres for neste gang)`);
+      await conv(missing.slice(i, i + 500));
     }
+    cacheSet(ck, { savedAt: Date.now(), map: known });
+    clog(`Modell ${modelId}: GUID hentet for ${missing.length} elementer og lagret`);
   }
   return guid;
+}
+
+// Fletter inn PK / Støpe Dato / Byggningsdel. values: Map(link -> { pk, date, del }). Returnerer antall treff.
+function applyCustom(values, guid) {
+  let hitPk = 0, hitDate = 0, hitDel = 0, hits = 0;
+  for (const o of items) {
+    const g = guid.get(key(o)); if (!g) continue;
+    const v = values.get("frn:entity:" + g) || values.get("frn:entity:" + encodeURIComponent(g));
+    if (!v) continue;
+    hits++;
+    if (v.pk) { o.pk = String(v.pk).trim(); hitPk++; }
+    if (v.del) { o.del = String(v.del).trim(); o.endring = /endringsarbeid/i.test(o.del); hitDel++; }
+    if (v.date) { o.dateRaw = String(v.date); o.date = parseDate(v.date); o.status = statusOf(o.date); hitDate++; }
+  }
+  clog(`Flettet inn: PK ${hitPk} · Støpe Dato ${hitDate} · Byggningsdel ${hitDel} (av ${items.length})`);
+  return hits;
+}
+let customSavedAt = null; // når PK/Støpe Dato sist ble hentet fra Trimble
+function updateDataInfo() {
+  if (!ui.dataInfo) return;
+  ui.dataInfo.textContent = customSavedAt
+    ? `PK / Støpe Dato hentet ${fmtTime(customSavedAt)}`
+    : "PK / Støpe Dato: ikke hentet ennå";
 }
 
 // Finn rolle (pk / date / del) for en egenskap ut fra navn i definisjonen
@@ -315,19 +394,41 @@ function roleOf(defName, label, propCount) {
 }
 
 // Hovedfunksjon: henter og fletter inn PK, Støpe Dato og Byggningsdel
-async function loadCustomProps() {
-  customLog = [];
+async function loadCustomProps(mode = "cache") {
   if (!items.length) return;
   try {
-    await getToken();
-    clog("Tilgangstoken: OK");
-    const guid = await loadGuids(items);
-    clog(`GUID funnet for ${guid.size} av ${items.length} elementer. Eksempel: ${[...guid.values()][0] || "–"}`);
+    const guid = await loadGuids(items, mode === "full");
+    clog(`GUID for ${guid.size} av ${items.length} elementer. Eksempel: ${[...guid.values()][0] || "–"}`);
     if (!guid.size) return;
 
+    // Hurtigminne: bruk sist hentede PK/Støpe Dato hvis de passer til modellen
+    const CK = `${CACHE_VER}:custom`;
+    if (mode === "cache") {
+      const cc = cacheGet(CK);
+      if (cc && cc.values) {
+        const hits = applyCustom(new Map(Object.entries(cc.values)), guid);
+        if (hits > 0) {
+          customSavedAt = cc.savedAt;
+          clog(`PK/Støpe Dato fra hurtigminne (${fmtTime(cc.savedAt)}). Trykk «Oppdater PK / Støpe Dato» for nyeste.`);
+          updateDataInfo();
+          return;
+        }
+      }
+    }
+
+    await getToken();
+    clog("Tilgangstoken: OK");
+
+    // Region og egenskapssett-oppsett huskes, så «Oppdater» bare henter verdiene
+    const CFG = `${CACHE_VER}:psetcfg`;
+    const cfg = mode === "full" ? null : cacheGet(CFG);
+    let host = null, wanted = [];
+    if (cfg && cfg.host && Array.isArray(cfg.wanted) && cfg.wanted.length) {
+      host = cfg.host; wanted = cfg.wanted;
+      clog(`Oppsett fra hurtigminne: ${host.split("//")[1].split("/")[0]}, ${wanted.length} egenskaper`);
+    } else {
     // 1) Oppdag region og egenskapssett-definisjoner ved å prøve noen elementer
     const samples = items.filter((o) => guid.has(key(o)) && !o.annet && !o.steel).slice(0, 40);
-    let host = null;
     const defs = new Map(); // "libId|defId" -> { libId, defId }
     // To måter å kode lenken i adressen på; den som gir treff huskes
     const variants = [
@@ -364,7 +465,7 @@ async function loadCustomProps() {
     if (!host || !defs.size) { clog("Fant ingen egne egenskapssett på prøve-elementene."); return; }
 
     // 2) Hent definisjonene (navn og egenskaper) og finn hvilke egenskaper vi trenger
-    const wanted = []; // { libId, defId, propKey, role }
+    wanted = []; // { libId, defId, propKey, role }
     for (const { libId, defId } of defs.values()) {
       let def;
       try { def = await psetGet(host, `/libs/${encodeURIComponent(libId)}/defs/${encodeURIComponent(defId)}`); }
@@ -383,6 +484,8 @@ async function loadCustomProps() {
       }
     }
     if (!wanted.length) { clog("Fant ikke PK/Støpe Dato/Byggningsdel blant egenskapene."); return; }
+    cacheSet(CFG, { savedAt: Date.now(), host, wanted });
+    } // slutt på oppdagelse
 
     // 3) Hent alle verdier per definisjon (sider à 500) -> link -> props
     const values = new Map(); // link -> { pk, date, del }
@@ -405,17 +508,15 @@ async function loadCustomProps() {
       clog(`Sett ${defId}: ${n} verdier hentet`);
     }
 
-    // 4) Flett inn
-    let hitPk = 0, hitDate = 0, hitDel = 0;
-    for (const o of items) {
-      const g = guid.get(key(o)); if (!g) continue;
-      const v = values.get("frn:entity:" + g) || values.get("frn:entity:" + encodeURIComponent(g));
-      if (!v) continue;
-      if (v.pk) { o.pk = String(v.pk).trim(); hitPk++; }
-      if (v.del) { o.del = String(v.del).trim(); o.endring = /endringsarbeid/i.test(o.del); hitDel++; }
-      if (v.date) { o.dateRaw = String(v.date); o.date = parseDate(v.date); o.status = statusOf(o.date); hitDate++; }
+    if (!values.size && cfg) {
+      try { localStorage.removeItem(CFG); } catch (_) { /* ignorer */ }
+      clog("Ingen verdier med lagret oppsett – oppsettet er nullstilt. Trykk «Les modellen på nytt».");
     }
-    clog(`Flettet inn: PK ${hitPk} · Støpe Dato ${hitDate} · Byggningsdel ${hitDel} (av ${items.length})`);
+    // 4) Flett inn og lagre
+    applyCustom(values, guid);
+    customSavedAt = Date.now();
+    if (!cacheSet(CK, { savedAt: customSavedAt, values: Object.fromEntries(values) })) clog("Kunne ikke lagre PK/Støpe Dato i hurtigminnet.");
+    updateDataInfo();
   } catch (err) {
     console.error(err);
     clog("Feil: " + (err?.message || err));
@@ -873,14 +974,15 @@ async function init() {
     setStatus("Fikk ikke kontakt med Trimble Connect. Åpne extensionen fra 3D-visningen.", true);
     return;
   }
-  ui.rescan.addEventListener("click", scan);
+  ui.rescan.addEventListener("click", () => scan("full"));          // alt på nytt (tar tid)
+  ui.refreshCustom.addEventListener("click", () => scan("refresh")); // bare nyeste PK/Støpe Dato
   el("diagBtn").addEventListener("click", diagnose);
   ui.colorAll.addEventListener("click", () => colorByStatus(items.filter((o) => !o.annet && !o.steel)));
   ui.resetColors.addEventListener("click", resetAll);
   ui.csvSel.addEventListener("click", () => exportCsv(currentSel, "utvalg"));
   ui.stampLabels.addEventListener("click", stampLabels);
   ui.clearLabels.addEventListener("click", async () => { await clearLabels(); ui.labelInfo.textContent = "Etiketter fjernet"; });
-  await scan();
+  await scan("cache"); // åpner raskt fra hurtigminnet hvis modellversjonen er lest før
 }
 
 ui.infoBtn.addEventListener("click", () => { ui.infoBox.hidden = !ui.infoBox.hidden; });
