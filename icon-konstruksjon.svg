@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- TB Betong Konstruksjon: støttemur med fundament -->
+  <rect width="64" height="64" rx="6" fill="#1c1c1c"/>
+  <!-- terreng bak muren -->
+  <path d="M33 22 L58 22 L58 47 L33 47 Z" fill="#5a4a3a"/>
+  <!-- vegg -->
+  <rect x="24" y="10" width="9" height="37" fill="#ee7f2d"/>
+  <!-- fundament (såle) -->
+  <rect x="10" y="47" width="44" height="8" fill="#ee7f2d"/>
+  <!-- terrenglinje foran -->
+  <line x1="4" y1="44" x2="24" y2="44" stroke="#9aa1a8" stroke-width="2"/>
+</svg>

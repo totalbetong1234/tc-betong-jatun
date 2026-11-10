@@ -1,0 +1,8 @@
+{
+  "title": "TB Betong PK",
+  "description": "Betong per PK-kode: volum, areal og støpestatus (Jåtunparken)",
+  "url": "https://totalbetong1234.github.io/tc-betong-jatun/index.html?view=pk",
+  "icon": "https://totalbetong1234.github.io/tc-betong-jatun/icon-pk.svg",
+  "infoUrl": "https://totalbetong1234.github.io/tc-betong-jatun/README.md",
+  "extensionType": ["3dviewer"]
+}
